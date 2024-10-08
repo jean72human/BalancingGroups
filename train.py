@@ -74,7 +74,8 @@ def run_experiment(args):
         "rwy": models.ERM,
         "rwg": models.ERM,
         "dro": models.GroupDRO,
-        "jtt": models.JTT
+        "jtt": models.JTT,
+        "csa": models.CSA
     }[args["method"]](args, loaders["tr"])
 
     last_epoch = 0
@@ -96,9 +97,15 @@ def run_experiment(args):
         for i, x, y, g in loaders["tr"]:
             model.update(i, x, y, g, epoch)
 
+        if args["method"] == "csa":
+            model.build_C(loaders['tr'])
+
         result = {
             "args": args, "epoch": epoch, "time": time.time() - start_time}
         for loader_name, loader in loaders.items():
+            if args["method"] == "csa":
+                print(f"Evaluating on {loader_name}")
+                model.adapt(loader)
             avg_acc, group_accs = model.accuracy(loader)
             result["acc_" + loader_name] = group_accs
             result["avg_acc_" + loader_name] = avg_acc
@@ -125,11 +132,15 @@ if __name__ == "__main__":
         torch.manual_seed(hparams_seed)
         args["hparams_seed"] = hparams_seed
 
-        args["dataset"] = randl(
-            ["waterbirds", "celeba", "multinli", "civilcomments"])
+        args["dataset"] = "waterbirds"
 
-        args["method"] = randl(
-            ["erm", "suby", "subg", "rwy", "rwg", "dro", "jtt"])
+        # args["method"] = randl(
+        #     ["erm", "suby", "subg", "rwy", "rwg", "dro", "jtt", "csa"])
+
+        # args["method"] = randl(
+        #     ["subg", "csa"])
+
+        args["method"] = "csa"
 
         args["num_epochs"] = {
             "waterbirds": 300 + 60,
@@ -139,13 +150,10 @@ if __name__ == "__main__":
         }[args["dataset"]]
 
         args["eta"] = 0.1
-        args["lr"] = randl([1e-5, 1e-4, 1e-3])
-        args["weight_decay"] = randl([1e-4, 1e-3, 1e-2, 1e-1, 1])
-
-        if args["dataset"] in ["waterbirds", "celeba"]:
-            args["batch_size"] = randl([2, 4, 8, 16, 32, 64, 128])
-        else:
-            args["batch_size"] = randl([2, 4, 8, 16, 32])
+        log_lr, log_wd, batch_size = -4.0, -2.0, 4
+        args["batch_size"] = batch_size
+        args["lr"] = 10**log_lr
+        args["weight_decay"] = 10**log_wd
 
         args["up"] = randl([4, 5, 6, 20, 50, 100])
         args["T"] = {
