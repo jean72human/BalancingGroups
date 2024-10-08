@@ -318,7 +318,7 @@ def get_loaders(data_path, dataset_name, batch_size, method="erm", duplicates=No
         "celeba": CelebA,
         "multinli": MultiNLI,
         "civilcomments": CivilCommentsFine
-        if method in ("subg", "rwg")
+        if method in ("subg", "rwg", "csa")
         else CivilComments,
         "toy": Toy,
     }[dataset_name]
@@ -337,7 +337,7 @@ def get_loaders(data_path, dataset_name, batch_size, method="erm", duplicates=No
             pin_memory=True,
         )
 
-    if method == "subg":
+    if method == "subg" or method == "csa":
         subsample_what = "groups"
     elif method == "suby":
         subsample_what = "classes"
