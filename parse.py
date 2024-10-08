@@ -127,8 +127,9 @@ def parse_json_to_df(dirs):
         "dro": "Yes",
         "rwg": "Yes",
         "subg": "Yes",
+        "csa": "Yes"
     }
-    nb_hps = {"erm": 4, "jtt": 6, "suby": 4, "rwy": 4, "dro": 5, "rwg": 4, "subg": 4}
+    nb_hps = {"erm": 4, "jtt": 6, "suby": 4, "rwy": 4, "dro": 5, "rwg": 4, "subg": 4, "csa": 4}
 
     for dname in dirs:
         for fname in glob.glob(os.path.join(dname, "*.out")):
