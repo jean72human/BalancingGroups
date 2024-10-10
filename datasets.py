@@ -53,29 +53,87 @@ class GroupDataset:
             self.wy.append(len(self) / self.class_sizes[self.y[i]])
 
     def subsample_(self, subsample_what):
+        """
+        Subsamples the dataset based on the specified criteria.
+
+        Args:
+            subsample_what (str): The subsampling strategy. 
+                                Options are "groups", "classes", or "conditional".
+        """
+
+        # Generate a random permutation of indices
         perm = torch.randperm(len(self)).tolist()
 
         if subsample_what == "groups":
-            min_size = min(list(self.group_sizes))
+            # Minimum group size across all groups
+            min_size = min(self.group_sizes)
+        elif subsample_what == "classes":
+            # Minimum class size across all classes
+            min_size = min(self.class_sizes)
+        elif subsample_what == "conditional":
+            # Calculate minimum class size within each group
+            min_size_per_group = []
+            for g in range(self.nb_groups):
+                # Extract indices belonging to group g
+                group_indices = [i for i in self.i if self.g[i] == g]
+                
+                # Count the number of samples per class within group g
+                class_counts = {}
+                for idx in group_indices:
+                    y = int(self.y[idx])
+                    class_counts[y] = class_counts.get(y, 0) + 1
+                
+                if class_counts:
+                    # Minimum class size within group g
+                    min_size = min(class_counts.values())
+                else:
+                    # If the group has no samples, set min_size to 0
+                    min_size = 0
+                min_size_per_group.append(min_size)
         else:
-            min_size = min(list(self.class_sizes))
+            raise ValueError(f"Unknown subsample_what option: {subsample_what}")
 
-        counts_g = [0] * self.nb_groups * self.nb_labels
-        counts_y = [0] * self.nb_labels
-        new_i = []
+        # Initialize counters
+        counts_g = [0] * (self.nb_labels * self.nb_groups)  # Counts per class-group pair
+        counts_y = [0] * self.nb_labels  # Counts per class
+
+        new_i = []  # List to store selected indices
+
         for p in perm:
-            y, g = self.y[self.i[p]], self.g[self.i[p]]
+            idx = self.i[p]
+            y = int(self.y[idx])  # Class label
+            g = int(self.g[idx])  # Group label
 
-            if (
-                subsample_what == "groups"
-                and counts_g[self.nb_groups * int(y) + int(g)] < min_size
-            ) or (subsample_what == "classes" and counts_y[int(y)] < min_size):
-                counts_g[self.nb_groups * int(y) + int(g)] += 1
-                counts_y[int(y)] += 1
-                new_i.append(self.i[p])
+            if subsample_what == "groups":
+                # Indexing: class * nb_groups + group
+                key = y * self.nb_groups + g
+                if counts_g[key] < min_size:
+                    counts_g[key] += 1
+                    counts_y[y] += 1
+                    new_i.append(idx)
 
+            elif subsample_what == "classes":
+                if counts_y[y] < min_size:
+                    key = y * self.nb_groups + g
+                    counts_g[key] += 1
+                    counts_y[y] += 1
+                    new_i.append(idx)
+
+            elif subsample_what == "conditional":
+                # Get the minimum size for the current group
+                group_min_size = min_size_per_group[g]
+                key = y * self.nb_groups + g
+                if counts_g[key] < group_min_size:
+                    counts_g[key] += 1
+                    counts_y[y] += 1
+                    new_i.append(idx)
+
+        # Update the indices with the subsampled list
         self.i = new_i
+
+        # Recount the groups after subsampling
         self.count_groups()
+
 
     def duplicate_(self, duplicates):
         new_i = []
@@ -337,8 +395,10 @@ def get_loaders(data_path, dataset_name, batch_size, method="erm", duplicates=No
             pin_memory=True,
         )
 
-    if method == "subg" or method == "csa":
+    if method == "subg":# or method == "csa"
         subsample_what = "groups"
+    elif method == "csa":
+        subsample_what = "conditional"
     elif method == "suby":
         subsample_what = "classes"
     else:
