@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import confusion_matrix
 
+import itertools
+
 
 class ToyNet(torch.nn.Module):
     def __init__(self, dim, gammas, output_dim=1):
@@ -67,10 +69,44 @@ def get_bert_optim(network, lr, weight_decay):
         eps=1e-8)
     return optimizer
 
+def get_bert_optim_csa(networks, lr, weight_decay):
+    no_decay = ["bias", "LayerNorm.weight"]
+    decay_params = []
+    nodecay_params = []
+    for network in networks:
+        for n, p in network.named_parameters():
+            if any(nd in n for nd in no_decay):
+                decay_params.append(p)
+            else:
+                nodecay_params.append(p)
+
+    optimizer_grouped_parameters = [
+        {
+            "params": decay_params,
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": nodecay_params,
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = AdamW(
+        optimizer_grouped_parameters,
+        lr=lr,
+        eps=1e-8)
+    return optimizer
+
 
 def get_sgd_optim(network, lr, weight_decay):
     return torch.optim.SGD(
         network.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        momentum=0.9)
+
+def get_sgd_optim_csa(networks, lr, weight_decay):
+    return torch.optim.SGD(
+        itertools.chain(*[network.parameters() for network in networks]),
         lr=lr,
         weight_decay=weight_decay,
         momentum=0.9)
@@ -312,29 +348,41 @@ class CSA(ERM):
     def init_model_(self, data_type, text_optim="sgd"):
         self.clip_grad = text_optim == "adamw"
         optimizers = {
-            "adamw": get_bert_optim,
-            "sgd": get_sgd_optim
+            "adamw": get_bert_optim_csa,
+            "sgd": get_sgd_optim_csa
         }
 
         if data_type == "images":
-            self.network = torchvision.models.resnet.resnet50(pretrained=True)
-            self.network.fc = torch.nn.Linear(self.network.fc.in_features, self.n_groups + self.n_classes * self.n_groups)
+            self.networks = nn.ModuleList()
+            for i in range(self.n_groups):
+                network = torchvision.models.resnet.resnet50(pretrained=True)
+                network.fc = torch.nn.Linear(network.fc.in_features, self.n_classes)
+                self.networks.append(network)
+            self.network_u = torchvision.models.resnet.resnet50(pretrained=True)
+            self.network_u.fc = torch.nn.Linear(self.network_u.fc.in_features, self.n_groups)
 
-            self.optimizer = optimizers['sgd'](
-                self.network,
+            self.optimizer = optimizers[text_optim](
+                self.networks+[self.network_u],
                 self.hparams['lr'],
-                self.hparams['weight_decay'])
+                self.hparams['weight_decay'],
+            )
 
             self.lr_scheduler = None
             self.loss = torch.nn.CrossEntropyLoss(reduction="none")
 
         elif data_type == "text":
-            self.network = BertWrapper(
-                BertForSequenceClassification.from_pretrained(
-                    'bert-base-uncased', num_labels=self.n_groups + self.n_classes * self.n_groups))
-            self.network.zero_grad()
+            self.networks = nn.ModuleList()
+            for i in range(self.n_groups):
+                self.networks.append(
+                    BertWrapper(
+                        BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=self.n_classes)
+                    )
+                )
+                self.networks[i].zero_grad()
+            self.network_u = BertWrapper(BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=self.n_groups))
+            self.network_u.zero_grad()
             self.optimizer = optimizers[text_optim](
-                self.network,
+                self.networks+[self.network_u],
                 self.hparams['lr'],
                 self.hparams['weight_decay'])
 
@@ -371,9 +419,9 @@ class CSA(ERM):
         # Loop through the batches to gather predictions and true group labels
         for i, x, y, g in loader:
             # Forward pass through the network
-            outputs = self.network(x.to(self.device))
+            outputs = self.network_u(x.cuda())
             # Assuming pred_g is the prediction for groups, get the max index for group prediction
-            _, predicted_groups = torch.max(outputs[:, :self.n_groups], 1)
+            _, predicted_groups = torch.max(outputs, 1)
             # Append the true and predicted labels to the lists
             true_labels.extend(g.numpy())
             predicted_labels.extend(predicted_groups.cpu().numpy())
@@ -386,7 +434,7 @@ class CSA(ERM):
             mu = torch.zeros(self.n_groups,1).to(self.device)
             matrices = []
             for i, x, y, g in loader:
-                u = self.network(x.to(self.device))[:,:self.n_groups]
+                u = self.network_u(x.cuda())
                 _, u = torch.max(u.unsqueeze(-1),1)
                 for i in range(self.n_groups):
                     mu[i,0] = (u==i).sum().item()
@@ -397,38 +445,52 @@ class CSA(ERM):
             w = w / w.sum()
             self.w = w.to(self.device)
 
-            # correct = [0]*self.n_groups
-            # total = [0]*self.n_groups
-            # for i, x, y, g in loader:
-            #     x, y, g = x.cuda(), y.cuda(), g.cuda()
-            #     ys = self.network(x.to(self.device))[:,self.n_groups:].reshape(-1,self.n_classes,self.n_groups)
-            #     for k in range(self.n_groups):
-            #         idx = g==k
-            #         correct[k] = (torch.argmax(ys[idx,k],-1).squeeze() == g[idx]).int().sum()
-            #         total[k] = idx.int().sum()
+    def update(self, i, x, y, g, epoch):
+        x, y, g = x.cuda(), y.cuda(), g.cuda()
+        loss_value = self.compute_loss_value_(i, x, y, g, epoch)
 
-            # for k in range(self.n_groups):
-            #     print(f"Accuracy {correct[k]/total[k]}")
+        if loss_value is not None:
+            self.optimizer.zero_grad()
+            loss_value.backward()
+
+            if self.clip_grad:
+                torch.nn.utils.clip_grad_norm_(self.network.parameters(), 1.0)
+
+            self.optimizer.step()
+
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+            if self.data_type == "text":
+                for i in range(self.n_groups):
+                    self.networks[i].zero_grad()
+                self.network_u.zero_grad()
+
+            loss_value = loss_value.item()
+
+        self.last_epoch = epoch
+        return loss_value
 
 
     def compute_loss_value_(self, i, x, y, g, epoch):
         loss = 0
-        preds = self.network(x)
-        pred_u = preds[:,:self.n_groups]
-        loss += self.loss(pred_u,g.long()).mean()
-        ys = preds[:,self.n_groups:].reshape(-1,self.n_classes,self.n_groups)
+        pred_u = self.network_u(x)
+        loss += self.loss(pred_u,g.long()).sum()
+        ys = torch.cat([network(x).unsqueeze(-1) for network in self.networks],-1)
         pred_y = torch.bmm(ys,F.one_hot(g,num_classes=self.n_groups).float().unsqueeze(-1)).squeeze()
-        loss += self.loss(pred_y,y).mean()
+        loss += self.loss(pred_y,y).sum()
         return loss
 
     def predict(self, x, u=None):
-        preds = self.network(x)
         if u is None:
-            pred_u = preds[:,:self.n_groups].softmax(-1).unsqueeze(-1)
+            pred_u = self.network_u(x).softmax(-1).unsqueeze(-1)
+            ys = torch.cat([network(x).softmax(-1).unsqueeze(-1) for network in self.networks],-1)
+            pred_y = torch.bmm(ys,pred_u*self.w[None,...]).squeeze()
         else:
             pred_u = F.one_hot(u,num_classes=self.n_groups).float().unsqueeze(-1).to(self.device)
-        ys = preds[:,self.n_groups:].reshape(-1,self.n_classes,self.n_groups).softmax(-2)
-        pred_y = torch.bmm(ys,pred_u*self.w[None,...]).squeeze()
+            ys = torch.cat([network(x).softmax(-1).unsqueeze(-1) for network in self.networks],-1)
+            pred_y = torch.bmm(ys,pred_u).squeeze()
+
         return pred_y
 
     # def accuracy(self, loader):
