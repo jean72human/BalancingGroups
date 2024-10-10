@@ -493,6 +493,15 @@ class CSA(ERM):
 
         return pred_y
 
+    def p_ux(self, x):
+        pred_u = self.network_u(x).softmax(-1)
+        return pred_u
+
+    def q_ux(self, x):
+        pred_u = self.network_u(x).softmax(-1).unsqueeze(-1)
+        pred_u = (pred_u*self.w[None,...]).squeeze()
+        return pred_u
+
     # def accuracy(self, loader):
     #     nb_groups = loader.dataset.nb_groups
     #     nb_labels = loader.dataset.nb_labels
