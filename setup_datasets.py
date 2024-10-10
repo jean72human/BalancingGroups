@@ -12,10 +12,43 @@ logging.basicConfig(level=logging.INFO)
 import gdown
 import pandas as pd
 from six import remove_move
+import requests
+from gdown import download 
+
+def download_with_gdown(url, dst, quiet=False):
+    """
+    Downloads a file from a given URL, bypassing SSL certificate issues if needed, 
+    and then saves it to the destination path using gdown.
+    
+    Parameters:
+    url (str): The URL of the file to download.
+    dst (str): The destination path where the file will be saved.
+    quiet (bool): If False, displays the download progress.
+    
+    Returns:
+    None
+    """
+    try:
+        # Download the file with SSL verification disabled
+        response = requests.get(url, verify=False)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            # Write the content to a file
+            with open(dst, 'wb') as file:
+                file.write(response.content)
+            
+            # Use gdown to save the file to the specified destination
+            gdown.download(dst, dst, quiet=quiet)
+            print(f"File successfully downloaded to {dst}")
+        else:
+            print(f"Failed to download file. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred: {e}")
 
 
 def download_and_extract(url, dst, remove=True):
-    gdown.download(url, dst, quiet=False)
+    download_with_gdown(url, dst, quiet=False)
 
     if dst.endswith(".tar.gz"):
         tar = tarfile.open(dst, "r:gz")
@@ -88,16 +121,16 @@ def download_celeba(data_path):
     celeba_dir = os.path.join(data_path, "celeba")
     os.makedirs(celeba_dir, exist_ok=True)
     download_and_extract(
-        "https://drive.google.com/uc?id=1mb1R6dXfWbvk3DnlWOBO8pDeoBKOcLE6",
+        "https://drive.google.com/uc?id=0B7EVK8r0v71pZjFTYXZWM3FlRnM",
         os.path.join(celeba_dir, "img_align_celeba.zip"),
     )
     download_and_extract(
-        "https://drive.google.com/uc?id=1acn0-nE4W7Wa17sIkKB0GtfW4Z41CMFB",
+        "https://drive.google.com/uc?id=0B7EVK8r0v71pY0NSMzRuSXJEVkk",
         os.path.join(celeba_dir, "list_eval_partition.txt"),
         remove=False
     )
     download_and_extract(
-        "https://drive.google.com/uc?id=11um21kRUuaUNoMl59TCe2fb01FNjqNms",
+        "https://drive.google.com/uc?id=0B7EVK8r0v71pblRyaVFSWGxPY0U",
         os.path.join(celeba_dir, "list_attr_celeba.txt"),
         remove=False
     )
